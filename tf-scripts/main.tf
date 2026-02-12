@@ -38,11 +38,28 @@ resource "google_compute_firewall" "allow_web" {
 }
 
 # -------------------------------
+# Firewall: SSH Access
+# -------------------------------
+resource "google_compute_firewall" "allow_ssh" {
+  name    = "allow-ssh"
+  network = google_compute_network.vpc_network.name
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["hackathon-vm"]
+}
+
+
+# -------------------------------
 # Compute Engine VM
 # -------------------------------
 resource "google_compute_instance" "vm_instance" {
   name         = "terraform-hackathon-vm"
-  machine_type = "e2-standard-4" # 4 vCPU, 16 GB RAM
+  machine_type = "e2-standard-4"
   zone         = "us-central1-c"
   tags         = ["hackathon-vm"]
 
@@ -55,47 +72,61 @@ resource "google_compute_instance" "vm_instance" {
 
   network_interface {
     network = google_compute_network.vpc_network.name
-    access_config {} # Public IP
+    access_config {}
   }
 
-  metadata_startup_script = <<-EOT
-    #!/bin/bash
-    set -e
+  metadata = {
+    startup-script = <<-EOT
+      #!/bin/bash
+      set -euxo pipefail
 
-    echo "===== Installing Docker ====="
-    apt-get update
-    apt-get install -y ca-certificates curl gnupg git
+      LOG=/var/log/startup-script.log
+      exec > >(tee -a "$LOG") 2>&1
 
-    curl -fsSL https://get.docker.com | sh
+      echo "===== GCE startup script started ====="
+      date
 
-    echo "===== Installing Docker Compose v2 ====="
-    mkdir -p /usr/local/lib/docker/cli-plugins
-    curl -SL https://github.com/docker/compose/releases/download/v2.29.2/docker-compose-linux-x86_64 \
-      -o /usr/local/lib/docker/cli-plugins/docker-compose
-    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+      echo "===== Installing base packages ====="
+      apt-get update
+      apt-get install -y curl git ca-certificates
 
-    systemctl enable docker
-    systemctl start docker
+      echo "===== Installing Docker ====="
+      curl -fsSL https://get.docker.com | sh
+      systemctl enable docker
+      systemctl start docker
 
-    echo "===== Allow docker without sudo ====="
-    usermod -aG docker $USER
+      echo "===== Waiting for Docker daemon ====="
+      until docker info >/dev/null 2>&1; do
+        sleep 2
+      done
 
-    echo "===== Cloning project from GitHub ====="
-    cd /opt
-    git clone https://github.com/LastAirbender07/security-manager-AI-Connect.git
-    chown -R $USER:$USER security-manager-AI-Connect
+      echo "===== Installing Docker Compose ====="
+      curl -L https://github.com/docker/compose/releases/download/v2.29.2/docker-compose-linux-x86_64 \
+        -o /usr/local/bin/docker-compose
+      chmod +x /usr/local/bin/docker-compose
 
-    echo "===== Starting Docker stack ====="
-    cd /opt/security-manager-AI-Connect/security-manager-main
-    chmod +x start_all.sh
-    ./start_all.sh
+      docker --version
+      docker-compose version
 
-    echo "===== Startup completed ====="
-  EOT
+      echo "===== Cloning application repository ====="
+      mkdir -p /opt
+      cd /opt
+      rm -rf security-manager-AI-Connect
+      git clone https://github.com/LastAirbender07/security-manager-AI-Connect.git
+
+      echo "===== Starting application stack ====="
+      cd /opt/security-manager-AI-Connect/security-manager-main
+      chmod +x start_all.sh
+      ./start_all.sh
+
+      echo "===== Startup script completed successfully ====="
+      date
+    EOT
+  }
 }
 
-# -------------------------------
-# Outputs
+
+# ------------------------------- # Outputs
 # -------------------------------
 output "vm_public_ip" {
   description = "Public IP of the Hackathon VM"
